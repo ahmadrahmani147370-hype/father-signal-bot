@@ -1,0 +1,20 @@
+# secrets
+.env
+*.env
+!.env.example
+# data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.csv
+# logs
+logs/
+*.log
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+_looptest.py
