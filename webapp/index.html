@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Father Signal Bot</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="style.css?v=3">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo">F</span><div><b>FATHER SIGNAL BOT</b><small id="age">-</small></div></div>
+  <span class="pill" id="scanPill">-</span>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<nav class="tabs">
+  <button data-tab="dash" class="active">Dashboard</button>
+  <button data-tab="sig">Signals</button>
+  <button data-tab="bt">Backtest</button>
+  <button data-tab="set">Settings</button>
+</nav>
+
+<main>
+  <section id="dash" class="tab active">
+    <div class="grid">
+      <div class="card stat"><small>Scanner</small><b id="stScan">-</b></div>
+      <div class="card stat"><small>Coins</small><b id="stCoins">-</b></div>
+      <div class="card stat"><small>Last scan (PKT)</small><b id="stLast">-</b></div>
+      <div class="card stat"><small>Errors (1h)</small><b id="stErr">-</b></div>
+    </div>
+    <div class="card">
+      <h3>Controls</h3>
+      <div class="btns">
+        <button class="act ok" data-a="scan_on">▶ Scan On</button>
+        <button class="act warn" data-a="scan_off">⏸ Scan Off</button>
+        <button class="act" data-a="scan_once">⟳ Scan Once</button>
+        <button class="act" data-a="refresh">↻ Refresh data</button>
+      </div>
+      <p class="hint">Each button sends the action to the bot and closes the app. The bot replies in chat with a fresh 📊 button.</p>
+    </div>
+    <div class="card">
+      <h3>Latest signals</h3>
+      <div id="dashSig" class="list"></div>
+    </div>
+  </section>
+
+  <section id="sig" class="tab">
+    <div id="sigList" class="list"></div>
+    <p class="hint">Entry = signal candle close. SL / TP are ATR reference levels from the bot settings, not advice.</p>
+  </section>
+
+  <section id="bt" class="tab">
+    <div class="card">
+      <h3>Run backtest</h3>
+      <div class="form">
+        <label>Coins <input id="btSym" type="number" min="1" max="100" value="5" inputmode="numeric"></label>
+        <label>Days <input id="btDays" type="number" min="0.5" max="30" step="0.5" value="3" inputmode="decimal"></label>
+        <button class="act" id="btRun">Run Backtest</button>
+      </div>
+      <p class="hint">Runs on the phone in the background. Results arrive in chat (summary + CSV).</p>
+    </div>
+    <div class="card"><h3>Latest run <small id="btMeta"></small></h3><div id="btOverall"></div></div>
+    <div class="card"><h3>Patterns (unseen test split)</h3><div id="btPat"></div>
+      <p class="hint">P = positive after costs on train, validation and test · N = negative · U = unstable · I = insufficient sample (&lt;200 test trades).</p>
+    </div>
+  </section>
+
+  <section id="set" class="tab">
+    <div class="card"><h3>Current settings</h3><div id="setList"></div></div>
+    <div class="card">
+      <h3>Change a setting</h3>
+      <div class="form">
+        <label>Key <select id="setKey"></select></label>
+        <label>Value <input id="setVal" type="number" step="any" inputmode="decimal"></label>
+        <button class="act" id="setBtn">Save setting</button>
+      </div>
+      <p class="hint" id="setHint"></p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  ⚠️ Analysis only. No trading, no orders, no wallet, no API keys.
+  The signal score is an engineering score (how many checks passed), not a probability.
+  Past backtest results do not predict future results. Not financial advice.
+</footer>
+<script src="app.js?v=3"></script>
+</body>
+</html>

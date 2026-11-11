@@ -70,6 +70,8 @@ class Config:
     val_frac: float = field(default_factory=lambda: _f("VALIDATION_FRACTION", 0.2))
     min_oos_trades: int = field(default_factory=lambda: _i("MIN_OOS_TRADES", 200))
 
+    webapp_url: str = field(default_factory=lambda: _s(
+        "WEBAPP_URL", "https://ahmadrahmani147370-hype.github.io/father-signal-bot/webapp/"))
     db_path: str = field(default_factory=lambda: _s("DB_PATH", "data/father.db"))
     retention_days: int = field(default_factory=lambda: _i("CANDLE_RETENTION_DAYS", 30))
     log_level: str = field(default_factory=lambda: _s("LOG_LEVEL", "INFO"))

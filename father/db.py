@@ -75,6 +75,10 @@ class Database:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
+        for c in ("atr", "sl", "tp"):  # added in v1.1 (Mini App reference levels)
+            if c not in cols:
+                self.conn.execute(f"ALTER TABLE signals ADD COLUMN {c} REAL")
         self.conn.commit()
 
     # ---------------------------------------------------------------- helpers
@@ -175,11 +179,12 @@ class Database:
         try:
             self.execute(
                 "INSERT INTO signals (created_at, signal_key, symbol, direction, entry_tf, confirm_tf, pattern,"
-                " candle_open_time, price, score, score_class, volume_confirmed, trend, rsi, reasons, sent, message)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " candle_open_time, price, score, score_class, volume_confirmed, trend, rsi, reasons, sent, message,"
+                " atr, sl, tp) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now_ms(), s["key"], s["symbol"], s["direction"], s["entry_tf"], s["confirm_tf"], s["pattern"],
                  s["candle_open_time"], s["price"], s["score"], s["score_class"], int(s["volume_confirmed"]),
-                 s["trend"], s["rsi"], json.dumps(s["reasons"]), int(s.get("sent", 0)), s.get("message", "")))
+                 s["trend"], s["rsi"], json.dumps(s["reasons"]), int(s.get("sent", 0)), s.get("message", ""),
+                 s.get("atr"), s.get("sl"), s.get("tp")))
             return True
         except sqlite3.IntegrityError:
             return False

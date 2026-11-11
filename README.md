@@ -44,7 +44,22 @@ On a normal PC: `pip install -r requirements.txt`.
 
 ---
 
-## Telegram commands
+## 📊 Father App (Telegram Mini App) - no server needed
+
+The bot has a full dashboard inside Telegram: **Dashboard, Signals, Backtest, Settings**.
+
+- The app is a static page hosted free on **GitHub Pages**:
+  https://ahmadrahmani147370-hype.github.io/father-signal-bot/webapp/
+- Send **/app** (or /start, /help). The bot shows a **📊 Father App** keyboard button. Tap it.
+- The bot puts its current data into the button link (status, last ~15 signals with entry/SL/TP reference levels,
+  latest backtest summary, settings). Data is a snapshot from the moment the button was sent; the app shows its age.
+- Buttons in the app (Scan On / Off / Once, Run Backtest, Save setting, Refresh) send the action back to the bot with
+  `Telegram.WebApp.sendData`. The app closes, the bot does the action, replies in chat and sends a **fresh** 📊 button.
+- Only your `TELEGRAM_CHAT_ID` is accepted. Actions and setting keys are checked against a whitelist.
+- The **menu button** (bottom-left in the chat) also opens the app, but Telegram does not allow menu launches to send
+  data back, so that view is **read-only**. Use the 📊 keyboard button for actions.
+- Your phone does not need to host anything. If you fork the repo, change `WEBAPP_URL` in `.env` to your own Pages URL.
+
 
 | Command | What it does |
 |---|---|
@@ -59,6 +74,7 @@ On a normal PC: `pip install -r requirements.txt`.
 | `/settings` | Show settings you can change |
 | `/set key value` | e.g. `/set min_score 80`, `/set max_spread_bps 3`, `/set min_volume 50000000` |
 | `/errors` | Recent scanner errors |
+| `/app` | Open the 📊 Father App (Mini App) |
 
 Settings changed with `/set` are saved in the database and survive restarts.
 
@@ -187,6 +203,10 @@ Update later: `cd ~/father-signal-bot && git pull`.
 4. `nano .env` kholein, `TELEGRAM_BOT_TOKEN` aur `TELEGRAM_CHAT_ID` likhein, save karein (Ctrl+O, Enter, Ctrl+X).
 5. `./start.sh` chalayein. Phir Telegram mein bot ko `/help` bhejein.
 6. Backtest ke liye: `/backtest 5 3` (top 5 coins, 3 din). Report: `/report`. Band karna: `/scan_off`.
+7. **Father App:** bot ko `/app` bhejein. Neeche **📊 Father App** button aayega, us par tap karein.
+   Dashboard, Signals, Backtest aur Settings tabs milenge. App ke buttons (Scan On/Off, Backtest, Setting) dabane se
+   app band ho jati hai aur bot chat mein jawab deta hai, saath naya 📊 button bhi. Menu button wali app sirf
+   dekhne ke liye hai (read-only) - buttons ke liye 📊 keyboard button use karein. Koi server nahi chahiye.
 
 **Zaroori baatein:**
 - Yeh bot sirf **analysis** karta hai. Koi trade, order ya wallet nahi. Binance API key ki zaroorat nahi.
@@ -209,8 +229,11 @@ father/scanner.py          coin universe, closed-candle scanning, duplicate chec
 father/backtest.py         backtest engine and reports
 father/db.py               SQLite storage
 father/telegram_alerts.py  Telegram API + signal message format
-father/telegram_bot.py     Telegram commands (long polling)
+father/telegram_bot.py     Telegram commands (long polling) + Mini App actions
+father/webapp.py           Mini App data link (base64url JSON) + action whitelist
+webapp/                    Mini App static page (GitHub Pages): index.html, app.js, style.css
 tests/test_core.py         unit tests (synthetic candles)
+tests/test_webapp.py       Mini App encoding + action tests
 setup_termux.sh            Termux installer
 start.sh                   run with wake-lock + auto-restart
 ```

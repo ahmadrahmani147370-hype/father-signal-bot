@@ -5,6 +5,7 @@ If TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are missing, messages are printed to th
 from __future__ import annotations
 
 import html
+import json
 import logging
 import time
 from pathlib import Path
@@ -111,7 +112,8 @@ class Telegram:
             delay = min(delay * 2, 30)
         return None
 
-    def send(self, text: str, html_mode: bool = False, chat_id: str | None = None) -> bool:
+    def send(self, text: str, html_mode: bool = False, chat_id: str | None = None,
+             reply_markup: dict | None = None) -> bool:
         target = chat_id or self.chat_id
         if not (self.token and target):
             print("\n" + "=" * 40 + "\n" + text + "\n" + "=" * 40)
@@ -121,6 +123,8 @@ class Telegram:
             data: dict[str, Any] = {"chat_id": target, "text": chunk, "disable_web_page_preview": "true"}
             if html_mode:
                 data["parse_mode"] = "HTML"
+            if reply_markup is not None:
+                data["reply_markup"] = json.dumps(reply_markup)
             ok = self._call("sendMessage", data) is not None and ok
         return ok
 
@@ -155,6 +159,20 @@ class Telegram:
     def delete_webhook(self) -> None:
         if self.token:
             self._call("deleteWebhook", {"drop_pending_updates": "false"})
+
+    def set_menu_button(self, url: str, text: str = "Father App", chat_id: str | None = None) -> bool:
+        """Chat menu button that opens the Mini App (menu launches are read-only: no sendData)."""
+        target = chat_id or self.chat_id
+        if not (self.token and target):
+            return False
+        mb = {"type": "web_app", "text": text, "web_app": {"url": url}}
+        return self._call("setChatMenuButton", {"chat_id": target, "menu_button": json.dumps(mb)}) is not None
+
+    def set_commands(self, commands: list[tuple[str, str]]) -> bool:
+        if not self.token:
+            return False
+        cmds = [{"command": c, "description": d} for c, d in commands]
+        return self._call("setMyCommands", {"commands": json.dumps(cmds)}) is not None
 
     def get_me(self) -> dict | None:
         j = self._call("getMe") if self.token else None

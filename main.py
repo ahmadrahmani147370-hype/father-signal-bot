@@ -78,9 +78,14 @@ def run_bot() -> None:
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     bot = CommandBot(cfg, db, scanner, tg)
+    tg.set_commands([("app", "Open the 📊 Father App"), ("status", "Scanner status"), ("scan_on", "Start scanning"),
+                     ("scan_off", "Pause scanning"), ("scan_once", "Run one scan now"),
+                     ("backtest", "Backtest: /backtest 5 3"), ("report", "Latest backtest report"),
+                     ("signals", "Recent signals"), ("coins", "Coin universe"), ("settings", "Show settings"),
+                     ("set", "Change: /set min_score 80"), ("errors", "Recent errors"), ("help", "Help")])
     threading.Thread(target=scanner.run_forever, args=(stop,), daemon=True, name="scanner").start()
-    tg.send(f"FATHER SIGNAL BOT started (@{me.get('username')}).\nScanner: {'ON' if scanner.enabled else 'OFF'}"
-            f"\nStatus: Analysis Only.\nSend /help for commands.")
+    bot.send_app_button(f"FATHER SIGNAL BOT started (@{me.get('username')}).\nScanner: {'ON' if scanner.enabled else 'OFF'}"
+                        f"\nStatus: Analysis Only.\nTap 📊 Father App below, or send /help.")
     log.info("Bot running as @%s. Press Ctrl+C to stop.", me.get("username"))
     try:
         bot.run_forever(stop)

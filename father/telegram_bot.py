@@ -15,6 +15,7 @@ from .config import TUNABLES, apply_setting
 from .db import Database
 from .scanner import Scanner
 from .telegram_alerts import Telegram, pre
+from .webapp import app_url, build_payload, parse_action
 
 log = logging.getLogger("father.bot")
 
@@ -32,6 +33,7 @@ HELP = """FATHER SIGNAL BOT - commands
 /settings - show tunable settings
 /set key value - e.g. /set min_score 80
 /errors - recent scanner errors
+/app - open the 📊 Father App (Telegram Mini App)
 /help - this message
 
 Signal Score = engineering score (how many checks passed), NOT a probability or win rate."""
@@ -67,14 +69,54 @@ class CommandBot:
     def reply(self, text: str, html_mode: bool = False) -> None:
         self.tg.send(text, html_mode=html_mode)
 
+    # ------------------------------------------------------------- mini app
+    APP_BUTTON = "📊 Father App"
+
+    def app_keyboard(self) -> dict:
+        url = app_url(self.cfg.webapp_url, self.payload(), keyboard=True)
+        return {"keyboard": [[{"text": self.APP_BUTTON, "web_app": {"url": url}}]],
+                "resize_keyboard": True, "is_persistent": True}
+
+    def payload(self) -> dict:
+        return build_payload(self.cfg, self.db, self.scanner, bool(self.bt_thread and self.bt_thread.is_alive()))
+
+    def send_app_button(self, text: str = "Tap 📊 Father App below to open the dashboard.") -> bool:
+        ok = self.tg.send(text, reply_markup=self.app_keyboard())
+        self.update_menu_button()
+        return ok
+
+    def update_menu_button(self) -> bool:
+        """Menu button = read-only snapshot (menu launches cannot send data back)."""
+        try:
+            return self.tg.set_menu_button(app_url(self.cfg.webapp_url, self.payload(), keyboard=False))
+        except Exception as e:  # never break the bot because of the menu
+            log.warning("setChatMenuButton failed: %s", e)
+            return False
+
+    def handle_web_app_data(self, data: str) -> None:
+        try:
+            cmd, args = parse_action(data)
+        except ValueError as e:
+            log.warning("Rejected Mini App data: %s", e)
+            self.reply(f"Mini App action rejected: {e}")
+            return
+        log.info("Mini App action: %s %s", cmd, args)
+        if cmd != "refresh":
+            getattr(self, "cmd_" + cmd)(args)
+        self.send_app_button("Fresh data loaded. Tap 📊 Father App to open it.")
+
     def handle(self, upd: dict) -> None:
         msg = upd.get("message") or {}
         chat = str((msg.get("chat") or {}).get("id", ""))
         text = (msg.get("text") or "").strip()
-        if not text.startswith("/"):
+        wad = msg.get("web_app_data")
+        if not text.startswith("/") and not wad:
             return
         if chat != self.tg.chat_id:
-            log.warning("Ignored command from unauthorised chat %s", chat)
+            log.warning("Ignored message from unauthorised chat %s", chat)
+            return
+        if wad:
+            self.handle_web_app_data(str(wad.get("data", "")))
             return
         parts = text.split()
         cmd = parts[0].split("@")[0].lower()
@@ -87,9 +129,14 @@ class CommandBot:
 
     # --------------------------------------------------------------- commands
     def cmd_start(self, args):
-        self.reply(HELP)
+        self.tg.send(HELP, reply_markup=self.app_keyboard())
+        self.update_menu_button()
 
     cmd_help = cmd_start
+
+    def cmd_app(self, args):
+        self.send_app_button("📊 Father App - dashboard, signals, backtest and settings.\n"
+                             "Use the keyboard button below (the menu button opens a read-only view).")
 
     def cmd_status(self, args):
         s = self.scanner
@@ -131,9 +178,9 @@ class CommandBot:
         def job():
             try:
                 info = self.scanner.scan_once()
-                self.reply(f"Scan done: {info['coins']} coins, {info['detections']} patterns on last closed candle, "
-                           f"{info['alerts']} alerts, {info['skipped']} skipped, {info['errors']} errors, "
-                           f"{info['seconds']}s")
+                self.tg.send(f"Scan done: {info['coins']} coins, {info['detections']} patterns on last closed candle, "
+                             f"{info['alerts']} alerts, {info['skipped']} skipped, {info['errors']} errors, "
+                             f"{info['seconds']}s", reply_markup=self.app_keyboard())
             except Exception as e:
                 self.reply(f"Scan failed: {e}")
         threading.Thread(target=job, daemon=True).start()
@@ -167,6 +214,7 @@ class CommandBot:
                 self.reply(pre(summary_text(res)), html_mode=True)
                 self.reply(pre(pattern_table(res["perf"])), html_mode=True)
                 self.tg.send_document(res["csv"], caption=f"Backtest {res['run_id']} - full results CSV")
+                self.send_app_button("Backtest saved. Open 📊 Father App → Backtest tab.")
             except Exception as e:
                 log.exception("backtest failed")
                 self.reply(f"Backtest failed: {e}")

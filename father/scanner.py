@@ -204,6 +204,13 @@ class Scanner:
                 "volume_confirmed": bool(row["volume_confirmed"]), "trend": trend_label(row["c_trend"]),
                 "rsi": float(row["rsi"]), "reasons": reasons_for(row),
             }
+            # reference levels only (same ATR rules as the backtest) - not trading advice
+            a = float(row["atr"]) if pd.notna(row["atr"]) else None
+            if a:
+                sgn = 1 if row["direction"] == "LONG" else -1
+                sig["atr"] = a
+                sig["sl"] = sig["price"] - sgn * self.cfg.sl_atr * a
+                sig["tp"] = sig["price"] + sgn * self.cfg.tp_atr * a
             sig["message"] = format_signal(sig)
             cands.append(sig)
         return {"detections": len(ev), "alerts": cands}
