@@ -45,8 +45,8 @@ class Config:
 
     universe_size: int = field(default_factory=lambda: _i("UNIVERSE_SIZE", 100))
     universe_refresh_min: float = field(default_factory=lambda: _f("UNIVERSE_REFRESH_MIN", 15))
-    min_quote_volume: float = field(default_factory=lambda: _f("MIN_QUOTE_VOLUME_USDT", 20_000_000))
-    max_spread_bps: float = field(default_factory=lambda: _f("MAX_SPREAD_BPS", 5))
+    min_quote_volume: float = field(default_factory=lambda: _f("MIN_QUOTE_VOLUME_USDT", 10_000_000))
+    max_spread_bps: float = field(default_factory=lambda: _f("MAX_SPREAD_BPS", 8))
     min_history: int = field(default_factory=lambda: _i("MIN_HISTORY_CANDLES", 210))
     close_delay_sec: float = field(default_factory=lambda: _f("CANDLE_CLOSE_DELAY_SEC", 3))
 

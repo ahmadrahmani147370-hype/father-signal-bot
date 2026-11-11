@@ -290,3 +290,17 @@ def pattern_table(perf: pd.DataFrame) -> str:
     lines += ["", "N<200 = insufficient sample: do not trust the numbers yet.",
               "Past results do not predict future results. Analysis only."]
     return "\n".join(lines)
+
+
+def filters_table(rows: pd.DataFrame) -> str:
+    """Test-split results by condition: volume, trend, regime, volatility, score class."""
+    if rows is None or rows.empty:
+        return "No backtest yet."
+    t = rows[(rows["split"] == "test") & rows["dimension"].isin(["volume", "trend", "regime", "volatility", "score_class"])]
+    lines = ["CONDITIONS (TEST split, after fees+slippage)",
+             f"{'TF':<6}{'Condition':<24}{'N':>5}{'WR%':>6}{'PF':>6}{'Net%':>8}"]
+    for r in t.itertuples():
+        lines.append(f"{r.timeframe:<6}{(r.dimension + ':' + r.grp)[:23]:<24}{r.total:>5}{r.win_rate:>6.1f}"
+                     f"{_fmt_pf(r.profit_factor):>6}{r.net_return:>8.2f}")
+    lines.append("Trend = confirmation-timeframe trend agrees with the signal. N<200 = insufficient sample.")
+    return "\n".join(lines)

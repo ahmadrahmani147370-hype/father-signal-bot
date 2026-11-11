@@ -70,6 +70,7 @@ The bot has a full dashboard inside Telegram: **Dashboard, Signals, Backtest, Se
 | `/backtest [symbols] [days]` | e.g. `/backtest 5 3` = top 5 coins, last 3 days. Runs in the background, sends a summary, a per-pattern table and a CSV file |
 | `/report` | Latest backtest results per pattern |
 | `/signals [n]` | Last n signals |
+| `/performance` | Tracked results of past alerts: did each one reach its TP or SL reference level first (or the time stop)? After fees + slippage |
 | `/coins` | Current coin universe (volume, spread) |
 | `/settings` | Show settings you can change |
 | `/set key value` | e.g. `/set min_score 80`, `/set max_spread_bps 3`, `/set min_volume 50000000` |
@@ -122,7 +123,7 @@ Status: Analysis Only.
 
 **Market scanner** (`father/scanner.py`)
 - Universe = USDT perpetual contracts with status `TRADING`, sorted by 24h quote volume, top 100.
-- Filters: minimum 24h volume (`MIN_QUOTE_VOLUME_USDT`), maximum bid/ask spread (`MAX_SPREAD_BPS`),
+- Filters: minimum 24h volume (`MIN_QUOTE_VOLUME_USDT`), maximum bid/ask spread (`MAX_SPREAD_BPS`, default 8 bps; min volume default 10M USDT - about 95-100 coins pass),
   minimum trade count, valid candle history (enough candles, no gaps, not stale).
   With strict filters you may get fewer than 100 coins - that is on purpose.
 - Universe refresh every 15 minutes.
@@ -134,6 +135,8 @@ Status: Analysis Only.
 
 **1M engine** - 10 candlestick patterns, volume spike (vs previous 20 candles), RSI turn, short-term momentum.
 **5M engine** - trend (EMA 20/50 + slope), market structure (higher highs/lows or lower highs/lows), momentum (RSI + MACD histogram).
+**5m patterns** - the 10 patterns are also detected on every closed 5m candle (stored in the `patterns` table).
+A 5m pattern in the same direction as the 1m signal adds +5 to the score and a reason line.
 **Combined** - a 1m pattern becomes an alert only if the **latest closed 5m candle** confirms the trend,
 the score is ≥ `MIN_ALERT_SCORE`, and (by default) volume is confirmed.
 
@@ -141,7 +144,7 @@ the score is ≥ `MIN_ALERT_SCORE`, and (by default) volume is confirmed.
 Bullish/Bearish Marubozu, Tweezer Bottom/Top. Vectorised pandas, using only current and past candles (tested for look-ahead).
 
 **Engineering score (0-100)**: pattern 30, volume 0-15, 5m trend 0-20, 5m structure 0-10, 5m momentum 0-10,
-1m momentum 0-10, RSI room 0-5. Optional adjustment from your own backtest results (patterns that lost money
+1m momentum 0-10, RSI room 0-5, 5m pattern in the same direction +5 (max 100). Optional adjustment from your own backtest results (patterns that lost money
 out-of-sample get −15). Classes: 85-100 Strong candidate · 75-84 Qualified candidate · 60-74 Watchlist · <60 Reject.
 
 **Backtest** (`father/backtest.py`)
@@ -161,6 +164,14 @@ out-of-sample get −15). Classes: 85-100 Strong candidate · 75-84 Qualified ca
 after fees and slippage, and every sample was too small. Run bigger backtests (e.g. `/backtest 20 14`)
 and only trust patterns that stay positive in the unseen test with 200+ trades. Past results do not predict the future.
 
+**Alert tracking** - every alert stores reference levels (Entry = signal candle close, SL / TP = ATR × `SL_ATR_MULT` /
+`TP_ATR_MULT`). The bot follows each alert with the same rules as the backtest (entry next candle open, SL first if both
+touched in one candle, fees + slippage, time stop `MAX_HOLD_BARS`) and stores the outcome in the `signals` table.
+See `/performance` or the Dashboard card in the app. These are measurements, not predictions.
+
+**Backtest reports in Telegram**: summary (overall, qualified strategy, long vs short), pattern table with verdicts,
+a conditions table (volume confirmed vs not, trend confirmed vs not, regime, volatility, score class) and the full CSV.
+
 **Database** (`data/father.db`, SQLite): candles, patterns, signals, backtest_results, coin_universe,
 performance_stats, failed_signals, scanner_errors, settings. Old candles are pruned after `CANDLE_RETENTION_DAYS`;
 signals and results are kept.
@@ -171,6 +182,20 @@ are retried with backoff. If Binance is blocked in your area (HTTP 451/403) the 
 `BINANCE_BASE_URL` can be changed in `.env`.
 
 ---
+
+## Reliability: heartbeat, watchdog, logs
+
+- Every network call has a timeout and retries with backoff. The whole download stage has a hard deadline (150 s),
+  so one stuck coin can not freeze the scanner.
+- The scanner loop and the Telegram loop catch every error and keep running. Errors go to `logs/father.log`,
+  the `scanner_errors` table, `/errors`, and (for commands / app actions) straight back to your chat.
+- Every command and every Mini App action is written to the log ("Command received", "Mini App action received / finished").
+- A heartbeat line is logged every 3 minutes (even when the scanner is OFF) and `logs/heartbeat` is updated every minute.
+- `start.sh` is a watchdog: if `logs/heartbeat` is older than 5 minutes on two checks in a row, it dumps all thread stacks
+  to `logs/threads.txt` and restarts the bot. It also restarts the bot after a crash.
+- If the phone (or computer) sleeps, the bot logs "Process was paused for X min" when it wakes up and resets its network
+  connections. A sleeping device can not scan - nothing can fix that in software.
+- Hang diagnosis by hand: `kill -USR1 <pid>` writes all thread stacks to `logs/threads.txt`.
 
 ## Running on Android - please read
 
@@ -208,10 +233,15 @@ Update later: `cd ~/father-signal-bot && git pull`.
    app band ho jati hai aur bot chat mein jawab deta hai, saath naya 📊 button bhi. Menu button wali app sirf
    dekhne ke liye hai (read-only) - buttons ke liye 📊 keyboard button use karein. Koi server nahi chahiye.
 
+8. `/performance` se purane alerts ka nateeja dekhein (TP pehle laga ya SL, fees ke baad).
+9. `./start.sh` watchdog bhi hai: agar bot 5 minute tak heartbeat na de to khud restart kar deta hai.
+   Log file: `logs/father.log`. Har 3 minute baad "heartbeat" line aati hai.
+
 **Zaroori baatein:**
 - Yeh bot sirf **analysis** karta hai. Koi trade, order ya wallet nahi. Binance API key ki zaroorat nahi.
 - "Signal Score" sirf engineering score hai, **jeetne ka chance nahi**.
 - 200 se kam test trades wale result par bharosa na karein ("insufficient sample").
+- Agar phone/computer so jaye (sleep) to bot bhi ruk jata hai; jagne par log mein "Process was paused" likha aata hai.
 - Android background mein app band kar sakta hai, is liye 24/7 ki guarantee nahi. Termux ki battery setting
   "Unrestricted" rakhein aur `/status` se check karte rahein.
 
@@ -234,6 +264,7 @@ father/webapp.py           Mini App data link (base64url JSON) + action whitelis
 webapp/                    Mini App static page (GitHub Pages): index.html, app.js, style.css
 tests/test_core.py         unit tests (synthetic candles)
 tests/test_webapp.py       Mini App encoding + action tests
+tests/test_robustness.py   alert tracking, 5m patterns, error reporting, loop survival, reports
 setup_termux.sh            Termux installer
 start.sh                   run with wake-lock + auto-restart
 ```

@@ -76,9 +76,11 @@ class Database:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
         cols = {r[1] for r in self.conn.execute("PRAGMA table_info(signals)")}
-        for c in ("atr", "sl", "tp"):  # added in v1.1 (Mini App reference levels)
+        for c, typ in (("atr", "REAL"), ("sl", "REAL"), ("tp", "REAL"),          # v1.1 reference levels
+                       ("entry_price", "REAL"), ("outcome", "TEXT"), ("exit_price", "REAL"),  # v1.2 outcome tracking
+                       ("ret_pct", "REAL"), ("closed_at", "INTEGER")):
             if c not in cols:
-                self.conn.execute(f"ALTER TABLE signals ADD COLUMN {c} REAL")
+                self.conn.execute(f"ALTER TABLE signals ADD COLUMN {c} {typ}")
         self.conn.commit()
 
     # ---------------------------------------------------------------- helpers
@@ -194,6 +196,35 @@ class Database:
 
     def recent_signals(self, n: int = 10) -> pd.DataFrame:
         return self.query_df("SELECT * FROM signals ORDER BY id DESC LIMIT ?", (int(n),))
+
+    # ------------------------------------------------------- alert outcomes
+    def pending_outcomes(self) -> pd.DataFrame:
+        return self.query_df("SELECT signal_key, symbol, direction, candle_open_time, sl, tp FROM signals "
+                             "WHERE sent=1 AND outcome IS NULL AND sl IS NOT NULL AND tp IS NOT NULL")
+
+    def close_outcome(self, key: str, entry: float, outcome: str, exit_price: float, ret_pct: float,
+                      closed_at: int) -> None:
+        self.execute("UPDATE signals SET entry_price=?, outcome=?, exit_price=?, ret_pct=?, closed_at=? "
+                     "WHERE signal_key=?", (entry, outcome, exit_price, ret_pct, closed_at, key))
+
+    def outcome_stats(self) -> dict:
+        """Tracked results of past alerts (reference TP/SL levels, after costs)."""
+        df = self.query_df("SELECT direction, pattern, ret_pct, outcome FROM signals WHERE outcome IS NOT NULL")
+        pend = self.query("SELECT COUNT(*) FROM signals WHERE sent=1 AND outcome IS NULL AND sl IS NOT NULL")[0][0]
+        out = {"closed": len(df), "pending": pend}
+        if df.empty:
+            return out
+        r = df["ret_pct"]
+        gp, gl = r[r > 0].sum(), -r[r <= 0].sum()
+        out.update({"wins": int((r > 0).sum()), "losses": int((r <= 0).sum()),
+                    "win_rate": round(float((r > 0).mean() * 100), 1),
+                    "profit_factor": round(float(gp / gl), 2) if gl > 0 else None,
+                    "net": round(float(r.sum()), 3), "avg": round(float(r.mean()), 4),
+                    "tp": int((df["outcome"] == "TP").sum()), "sl": int((df["outcome"] == "SL").sum()),
+                    "time": int((df["outcome"] == "TIME").sum()),
+                    "by_side": {d: [int(len(g)), round(float(g["ret_pct"].sum()), 3)] for d, g in df.groupby("direction")},
+                    "by_pattern": {p: [int(len(g)), round(float(g["ret_pct"].sum()), 3)] for p, g in df.groupby("pattern")}})
+        return out
 
     def log_failed_signal(self, symbol: str, pattern: str, direction: str, score: float, reason: str,
                           payload: dict | None = None) -> None:

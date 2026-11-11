@@ -4,6 +4,8 @@
 5M ENGINE  - trend (EMA fast/slow + slope), market structure (higher highs/lows), momentum (RSI + MACD hist).
 COMBINED   - a 1m pattern is only a signal when the latest *closed* 5m candle confirms it.
 
+Score parts: pattern 30, volume 0-15, 5m trend 0-20, 5m structure 0-10, 5m momentum 0-10,
+1m momentum turn 0-10, RSI room 0-5, 5m pattern in same direction +5 (capped at 100).
 Signal Score is an ENGINEERING SCORE (0-100) that counts how many quality checks passed.
 It is NOT a probability and NOT a win rate.
 """
@@ -123,7 +125,14 @@ def build_events(df: pd.DataFrame, cfg, htf: pd.DataFrame | None = None, tf: str
     ev["rsi_prev"] = d["rsi"].shift(1).loc[ev["idx"].to_numpy()].to_numpy()
 
     if htf is not None and len(htf) >= 60:
-        h = add_indicators(htf, cfg)[["close_time", "trend", "structure", "mom", "rsi"]].dropna(subset=["close_time"])
+        hi = add_indicators(htf, cfg).reset_index(drop=True)
+        hp = detect_patterns(hi)
+        longs = [p for p, d in PATTERNS.items() if d == "LONG"]
+        shorts = [p for p, d in PATTERNS.items() if d == "SHORT"]
+        # name of the first bullish / bearish pattern on each closed 5m candle ("" if none)
+        hi["c_pat_long"] = hp[longs].idxmax(axis=1).where(hp[longs].any(axis=1), "")
+        hi["c_pat_short"] = hp[shorts].idxmax(axis=1).where(hp[shorts].any(axis=1), "")
+        h = hi[["close_time", "trend", "structure", "mom", "rsi", "c_pat_long", "c_pat_short"]].dropna(subset=["close_time"])
         h = h.rename(columns={"close_time": "htf_close_time", "trend": "c_trend", "structure": "c_structure",
                               "mom": "c_mom", "rsi": "c_rsi"}).sort_values("htf_close_time")
         ev = ev.sort_values("close_time")
@@ -131,9 +140,11 @@ def build_events(df: pd.DataFrame, cfg, htf: pd.DataFrame | None = None, tf: str
         ev = pd.merge_asof(ev, h, left_on="close_time", right_on="htf_close_time", direction="backward")
         ev = ev.sort_values(["idx", "pattern"]).reset_index(drop=True)
         ev[["c_trend", "c_structure", "c_mom"]] = ev[["c_trend", "c_structure", "c_mom"]].fillna(0)
+        ev[["c_pat_long", "c_pat_short"]] = ev[["c_pat_long", "c_pat_short"]].fillna("")
         ev["confirm_tf"] = "5m"
     else:
         ev["c_trend"], ev["c_structure"], ev["c_mom"], ev["c_rsi"] = ev["trend"], ev["structure"], ev["mom"], ev["rsi"]
+        ev["c_pat_long"], ev["c_pat_short"] = "", ""
         ev["confirm_tf"] = tf
     ev["entry_tf"] = tf
     return score_events(ev, cfg, tf, adjustments)
@@ -157,6 +168,10 @@ def score_events(ev: pd.DataFrame, cfg, tf: str, adjustments: dict | None = None
     score += np.where(mom_ok, 10, 0)
     room = np.where(sign == 1, r < 70, r > 30)                                  # RSI not exhausted
     score += np.where(room, 5, 0)
+    # higher-timeframe candle pattern in the same direction (5m engine) -> small bonus
+    htf_pat = np.where(sign == 1, ev["c_pat_long"].astype(str), ev["c_pat_short"].astype(str)) \
+        if "c_pat_long" in ev else np.full(len(ev), "")
+    score += np.where(htf_pat != "", 5, 0)
     if adjustments:
         score += ev["pattern"].map(lambda p: adjustments.get((tf, p), 0)).to_numpy(dtype=float)
     ev = ev.copy()
@@ -167,6 +182,7 @@ def score_events(ev: pd.DataFrame, cfg, tf: str, adjustments: dict | None = None
     ev["trend_against"] = t_al == -1
     ev["momentum_confirmed"] = mom_ok
     ev["structure_confirmed"] = s_al == 1
+    ev["htf_pattern"] = htf_pat
     # a qualified signal needs: score >= MIN_ALERT_SCORE, confirmation-timeframe trend aligned,
     # and (by default) a volume spike
     vol_req = ev["volume_confirmed"] if int(getattr(cfg, "require_volume", 1)) else True
@@ -186,4 +202,6 @@ def reasons_for(row) -> list[str]:
         out.append("Momentum confirmation.")
     if row.get("structure_confirmed"):
         out.append(f"{ctf} market structure aligned.")
+    if row.get("htf_pattern"):
+        out.append(f"{ctf} {row['htf_pattern']} pattern aligned.")
     return out

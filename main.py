@@ -57,6 +57,42 @@ def build():
     return cfg, db, client, tg, scanner
 
 
+HEARTBEAT_FILE = ROOT / "logs" / "heartbeat"
+
+
+def heartbeat_loop(stop: threading.Event, scanner, bot, client, tg, interval: int = 60, log_every: int = 180) -> None:
+    """Writes logs/heartbeat every minute (start.sh watchdog reads it), logs a status line every 3 min,
+    restarts the scanner thread if it died, and detects sleeps/pauses of the phone or VM."""
+    log = logging.getLogger("father.heartbeat")
+    last_tick = time.time()
+    last_log = 0.0
+    while not stop.is_set():
+        try:
+            now = time.time()
+            gap = now - last_tick
+            if gap > interval * 2.5:
+                log.warning("Process was paused for %.1f min (phone/VM sleep or no CPU). Resetting network sessions.",
+                            gap / 60)
+                client.reset_session()
+                tg.reset_session()
+            last_tick = now
+            HEARTBEAT_FILE.write_text(str(int(now)))
+            st = getattr(scanner, "thread", None)
+            if st is not None and not st.is_alive() and not stop.is_set():
+                log.error("Scanner thread died - restarting it")
+                scanner.thread = threading.Thread(target=scanner.run_forever, args=(stop,), daemon=True, name="scanner")
+                scanner.thread.start()
+            if now - last_log >= log_every:
+                last_log = now
+                ls = f"{int(now - scanner.last_scan_ts)}s ago" if scanner.last_scan_ts else "never"
+                log.info("heartbeat: scanner=%s last_scan=%s scan_loop=%ds ago tg_loop=%ds ago coins=%d weight=%s",
+                         "ON" if scanner.enabled else "OFF", ls, int(now - scanner.loop_ts), int(now - bot.loop_ts),
+                         len(scanner.symbols), client.used_weight)
+        except Exception:
+            log.exception("heartbeat error")
+        stop.wait(interval)
+
+
 def run_bot() -> None:
     cfg, db, client, tg, scanner = build()
     log = logging.getLogger("father")
@@ -74,6 +110,13 @@ def run_bot() -> None:
     if not me:
         log.error("Could not reach Telegram. Check TELEGRAM_BOT_TOKEN and your internet.")
         sys.exit(3)
+    # `kill -USR1 <pid>` writes all thread stacks to logs/threads.txt (hang diagnosis without extra tools)
+    try:
+        import faulthandler
+        _fh = open(ROOT / "logs" / "threads.txt", "a")
+        faulthandler.register(signal.SIGUSR1, file=_fh, all_threads=True)
+    except (AttributeError, ValueError, OSError):
+        pass
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
@@ -83,9 +126,14 @@ def run_bot() -> None:
                      ("backtest", "Backtest: /backtest 5 3"), ("report", "Latest backtest report"),
                      ("signals", "Recent signals"), ("coins", "Coin universe"), ("settings", "Show settings"),
                      ("set", "Change: /set min_score 80"), ("errors", "Recent errors"), ("help", "Help")])
-    threading.Thread(target=scanner.run_forever, args=(stop,), daemon=True, name="scanner").start()
-    bot.send_app_button(f"FATHER SIGNAL BOT started (@{me.get('username')}).\nScanner: {'ON' if scanner.enabled else 'OFF'}"
-                        f"\nStatus: Analysis Only.\nTap 📊 Father App below, or send /help.")
+    scanner.thread = threading.Thread(target=scanner.run_forever, args=(stop,), daemon=True, name="scanner")
+    scanner.thread.start()
+    threading.Thread(target=heartbeat_loop, args=(stop, scanner, bot, client, tg), daemon=True, name="heartbeat").start()
+    try:
+        bot.send_app_button(f"FATHER SIGNAL BOT started (@{me.get('username')}).\nScanner: {'ON' if scanner.enabled else 'OFF'}"
+                            f"\nStatus: Analysis Only.\nTap 📊 Father App below, or send /help.")
+    except Exception:
+        log.exception("startup message failed (will keep running)")
     log.info("Bot running as @%s. Press Ctrl+C to stop.", me.get("username"))
     try:
         bot.run_forever(stop)

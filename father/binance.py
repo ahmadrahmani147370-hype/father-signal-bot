@@ -59,6 +59,16 @@ class BinanceFuturesPublic:
         self._weight_ts = 0.0
         self.time_offset_ms = 0  # server_time - local_time
 
+    def reset_session(self) -> None:
+        """Drop pooled connections (they are dead after the phone/VM slept)."""
+        old = self.session
+        self.session = requests.Session()
+        self.session.headers.update(old.headers)
+        try:
+            old.close()
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------ core
     def _pace(self, weight: int) -> None:
         with self._lock:

@@ -79,6 +79,13 @@ class Telegram:
         self.retries = retries
         self.session = requests.Session()
 
+    def reset_session(self) -> None:
+        old, self.session = self.session, requests.Session()
+        try:
+            old.close()
+        except Exception:
+            pass
+
     @property
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)

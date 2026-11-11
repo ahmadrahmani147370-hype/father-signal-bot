@@ -23,7 +23,8 @@ VERDICT_CODES = {"positive after costs (OOS)": "P", "negative after costs": "N",
 MAX_URL_LEN = 2000                      # keep well under client limits
 SETTINGS_IN_APP = ["min_score", "max_spread_bps", "min_volume", "volume_spike", "cooldown_min",
                    "universe_size", "require_volume", "max_alerts"]
-ACTIONS = {"scan_on", "scan_off", "scan_once", "backtest", "set", "refresh", "status", "report"}
+ACTIONS = {"scan_on", "scan_off", "scan_once", "backtest", "set", "refresh", "status", "report",
+           "performance", "signals", "errors"}
 
 
 def _num(x, sig: int = 6):
@@ -74,13 +75,18 @@ def build_payload(cfg, db, scanner, bt_running: bool = False, n_signals: int = 1
         order = {"1m+5m": 0, "1m": 1, "5m": 2}
         bt["p"].sort(key=lambda x: (order.get(x[0], 3), -(x[3] or 0)))
     since = int((time.time() - 3600) * 1000)
+    st = db.outcome_stats()
+    lp = {"c": st.get("closed", 0), "o": st.get("pending", 0)}
+    if st.get("closed"):
+        lp.update({"tp": st["tp"], "sl": st["sl"], "tm": st["time"], "pf": _num(st["profit_factor"], 4),
+                   "net": _num(st["net"], 5), "avg": _num(st["avg"], 4)})
     return {
         "v": 1, "t": int(time.time()),
         "s": {"on": int(bool(s.enabled)), "n": len(s.symbols),
               "ls": int(s.last_scan_ts) if s.last_scan_ts else 0,
               "la": int((s.last_scan_info or {}).get("alerts", 0)),
               "e": int(db.count_errors_since(since)), "bt": int(bool(bt_running))},
-        "g": sigs, "b": bt,
+        "g": sigs, "b": bt, "lp": lp,
         "c": {k: _num(getattr(cfg, TUNABLES[k][0])) for k in SETTINGS_IN_APP},
     }
 

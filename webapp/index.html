@@ -6,7 +6,7 @@
 <meta name="color-scheme" content="dark light">
 <title>Father Signal Bot</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<link rel="stylesheet" href="style.css?v=3">
+<link rel="stylesheet" href="style.css?v=4">
 </head>
 <body>
 <header class="top">
@@ -38,8 +38,15 @@
         <button class="act warn" data-a="scan_off">⏸ Scan Off</button>
         <button class="act" data-a="scan_once">⟳ Scan Once</button>
         <button class="act" data-a="refresh">↻ Refresh data</button>
+        <button class="act" data-a="performance">📈 Alert results</button>
+        <button class="act" data-a="errors">⚠️ Errors</button>
       </div>
       <p class="hint">Each button sends the action to the bot and closes the app. The bot replies in chat with a fresh 📊 button.</p>
+    </div>
+    <div class="card">
+      <h3>Tracked alert results</h3>
+      <div id="lp"></div>
+      <p class="hint">Each alert is followed until its TP / SL reference level or the time stop. Entry next candle open, fees + slippage included. Past results, not a prediction.</p>
     </div>
     <div class="card">
       <h3>Latest signals</h3>
@@ -87,6 +94,6 @@
   The signal score is an engineering score (how many checks passed), not a probability.
   Past backtest results do not predict future results. Not financial advice.
 </footer>
-<script src="app.js?v=3"></script>
+<script src="app.js?v=4"></script>
 </body>
 </html>

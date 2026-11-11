@@ -10,7 +10,7 @@ import time
 
 import pandas as pd
 
-from .backtest import pattern_table, run_backtest, summary_text
+from .backtest import filters_table, pattern_table, run_backtest, summary_text
 from .config import TUNABLES, apply_setting
 from .db import Database
 from .scanner import Scanner
@@ -29,6 +29,7 @@ HELP = """FATHER SIGNAL BOT - commands
 /backtest [symbols] [days] - e.g. /backtest 5 3  (top 5 coins, 3 days)
 /report - latest backtest pattern results
 /signals [n] - last n signals (default 10)
+/performance - tracked results of past alerts (TP/SL/time)
 /coins - current coin universe
 /settings - show tunable settings
 /set key value - e.g. /set min_score 80
@@ -52,19 +53,40 @@ class CommandBot:
         self.offset: int | None = None
         self.bt_thread: threading.Thread | None = None
         self.started = time.time()
+        self.loop_ts = time.time()
 
     # ---------------------------------------------------------------- polling
     def run_forever(self, stop: threading.Event) -> None:
         self.tg.delete_webhook()
         log.info("Telegram command loop started")
         while not stop.is_set():
-            for upd in self.tg.get_updates(self.offset, timeout=25):
-                self.offset = upd["update_id"] + 1
+            self.loop_ts = time.time()
+            try:
+                updates = self.tg.get_updates(self.offset, timeout=25)
+            except Exception:  # never let the command loop die
+                log.exception("getUpdates crashed; retrying in 5s")
+                stop.wait(5)
+                continue
+            for upd in updates:
                 try:
+                    self.offset = int(upd["update_id"]) + 1
                     self.handle(upd)
                 except Exception as e:
-                    log.exception("command failed")
-                    self.reply(f"Error: {type(e).__name__}: {e}")
+                    self.report_error("command", e)
+        log.info("Telegram command loop stopped")
+
+    def report_error(self, stage: str, e: Exception) -> None:
+        """Log + store + tell the user in chat. Never raises."""
+        msg = f"{type(e).__name__}: {e}"
+        log.exception("%s failed: %s", stage, msg)
+        try:
+            self.db.log_error(None, "telegram:" + stage, msg)
+        except Exception:
+            pass
+        try:
+            self.reply(f"⚠️ {stage} failed: {msg[:300]}")
+        except Exception:
+            pass
 
     def reply(self, text: str, html_mode: bool = False) -> None:
         self.tg.send(text, html_mode=html_mode)
@@ -100,10 +122,22 @@ class CommandBot:
             log.warning("Rejected Mini App data: %s", e)
             self.reply(f"Mini App action rejected: {e}")
             return
-        log.info("Mini App action: %s %s", cmd, args)
-        if cmd != "refresh":
-            getattr(self, "cmd_" + cmd)(args)
-        self.send_app_button("Fresh data loaded. Tap 📊 Father App to open it.")
+        log.info("Mini App action received: %s %s", cmd, args)
+        ok = True
+        try:
+            if cmd == "refresh":
+                self.reply("↻ Refreshing app data...")
+            else:
+                getattr(self, "cmd_" + cmd)(args)
+        except Exception as e:
+            ok = False
+            self.report_error(f"Mini App action '{cmd}'", e)
+        finally:
+            try:
+                self.send_app_button(("✅ Done. " if ok else "") + "Fresh data loaded. Tap 📊 Father App to open it.")
+            except Exception as e:
+                self.report_error("app button", e)
+        log.info("Mini App action finished: %s ok=%s", cmd, ok)
 
     def handle(self, upd: dict) -> None:
         msg = upd.get("message") or {}
@@ -116,16 +150,21 @@ class CommandBot:
             log.warning("Ignored message from unauthorised chat %s", chat)
             return
         if wad:
+            log.info("Mini App data received (%d bytes)", len(str(wad.get("data", ""))))
             self.handle_web_app_data(str(wad.get("data", "")))
             return
         parts = text.split()
         cmd = parts[0].split("@")[0].lower()
         args = parts[1:]
         fn = getattr(self, "cmd_" + cmd[1:], None)
+        log.info("Command received: %s %s", cmd, " ".join(args)[:100])
         if fn is None:
             self.reply("Unknown command. Send /help")
             return
-        fn(args)
+        try:
+            fn(args)
+        except Exception as e:
+            self.report_error(cmd, e)
 
     # --------------------------------------------------------------- commands
     def cmd_start(self, args):
@@ -154,6 +193,9 @@ class CommandBot:
             f"Errors last hour: {errs}",
             f"Last error: {s.last_error or '-'}",
             f"Backtest running: {'yes' if self.bt_thread and self.bt_thread.is_alive() else 'no'}",
+            f"Scanner loop heartbeat: {int(time.time() - s.loop_ts)}s ago",
+            f"Tracked alerts: {self.db.outcome_stats().get('closed', 0)} closed, "
+            f"{self.db.outcome_stats().get('pending', 0)} open (/performance)",
             f"Uptime: {int((time.time() - self.started) / 60)} min",
             "Mode: Analysis Only",
         ]
@@ -182,7 +224,7 @@ class CommandBot:
                              f"{info['alerts']} alerts, {info['skipped']} skipped, {info['errors']} errors, "
                              f"{info['seconds']}s", reply_markup=self.app_keyboard())
             except Exception as e:
-                self.reply(f"Scan failed: {e}")
+                self.report_error("scan_once", e)
         threading.Thread(target=job, daemon=True).start()
 
     def cmd_backtest(self, args):
@@ -213,11 +255,11 @@ class CommandBot:
                 res = run_backtest(self.cfg, self.db, self.scanner.client, syms, days, progress=prog)
                 self.reply(pre(summary_text(res)), html_mode=True)
                 self.reply(pre(pattern_table(res["perf"])), html_mode=True)
+                self.reply(pre(filters_table(res["rows"])), html_mode=True)
                 self.tg.send_document(res["csv"], caption=f"Backtest {res['run_id']} - full results CSV")
                 self.send_app_button("Backtest saved. Open 📊 Father App → Backtest tab.")
             except Exception as e:
-                log.exception("backtest failed")
-                self.reply(f"Backtest failed: {e}")
+                self.report_error("backtest", e)
         self.bt_thread = threading.Thread(target=job, daemon=True)
         self.bt_thread.start()
 
@@ -228,6 +270,24 @@ class CommandBot:
             return
         self.reply(pre(f"Run {perf['run_id'].iloc[0]} ({_t(perf['updated_at'].iloc[0])})\n" + pattern_table(perf)),
                    html_mode=True)
+        self.reply(pre(filters_table(self.db.latest_backtest())), html_mode=True)
+
+    def cmd_performance(self, args):
+        st = self.db.outcome_stats()
+        if not st.get("closed"):
+            self.reply(f"No tracked alert results yet ({st.get('pending', 0)} still open). "
+                       f"Each alert is followed until its TP / SL reference level or {self.cfg.max_hold_bars} candles.")
+            return
+        lines = ["TRACKED ALERT RESULTS (analysis only)",
+                 "Entry next candle open, ATR TP/SL reference levels, fees + slippage included.",
+                 f"Closed: {st['closed']}  (TP {st['tp']} / SL {st['sl']} / time {st['time']})  open: {st['pending']}",
+                 f"Wins/Losses: {st['wins']}/{st['losses']}  PF: {st['profit_factor'] if st['profit_factor'] is not None else '-'}",
+                 f"Net: {st['net']:+.2f}%  Avg/alert: {st['avg']:+.3f}%  (1x, summed)", "", "By side:"]
+        lines += [f"  {k}: {v[0]} alerts, net {v[1]:+.2f}%" for k, v in st["by_side"].items()]
+        lines += ["By pattern:"] + [f"  {k}: {v[0]}, net {v[1]:+.2f}%" for k, v in
+                                     sorted(st["by_pattern"].items(), key=lambda x: -x[1][0])]
+        lines += ["", "Small samples mean nothing. Past results do not predict future results."]
+        self.reply("\n".join(lines))
 
     def cmd_signals(self, args):
         n = int(args[0]) if args and args[0].isdigit() else 10

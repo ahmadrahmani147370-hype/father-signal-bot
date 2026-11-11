@@ -95,6 +95,15 @@
   $("stLast").textContent = D && s.ls ? pkt(s.ls) : "-";
   $("stErr").textContent = D ? s.e : "-";
 
+  var lp = (D && D.lp) || null;
+  $("lp").innerHTML = !lp ? '<div class="empty">No data.</div>' : !lp.c ?
+    '<div class="empty">No closed alerts yet (' + esc(lp.o || 0) + ' open).</div>' :
+    '<div class="kv"><span>Closed / open</span><b>' + esc(lp.c) + " / " + esc(lp.o) + "</b></div>" +
+    '<div class="kv"><span>TP / SL / time stop</span><b>' + esc(lp.tp) + " / " + esc(lp.sl) + " / " + esc(lp.tm) + "</b></div>" +
+    '<div class="kv"><span>Profit factor</span><b>' + esc(lp.pf == null ? "-" : lp.pf) + "</b></div>" +
+    '<div class="kv"><span>Net % (1x, summed)</span><b>' + esc(lp.net) + "</b></div>" +
+    '<div class="kv"><span>Avg % per alert</span><b>' + esc(lp.avg) + "</b></div>";
+
   function sigHtml(g) {
     var side = g[1] === "L" ? "LONG" : "SHORT", pat = PATTERNS[g[2]] || "?";
     return '<div class="sig"><span class="side ' + esc(g[1]) + '">' + side + '</span>' +

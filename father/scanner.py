@@ -5,16 +5,19 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FutTimeout
 
 import pandas as pd
 
 from .binance import INTERVAL_MS, BinanceFuturesPublic, GeoBlockedError
 from .db import Database, now_ms
+from .patterns import PATTERNS, detect_patterns
 from .strategy import build_events, pattern_adjustments, reasons_for, trend_label
 from .telegram_alerts import Telegram, format_signal
 
 log = logging.getLogger("father.scanner")
 ANALYSIS_BARS = 300
+FETCH_DEADLINE_SEC = 150
 
 
 def check_candles(df: pd.DataFrame, interval: str, min_rows: int, now: int) -> str | None:
@@ -44,6 +47,7 @@ class Scanner:
         self.last_scan_ts: float | None = None
         self.last_scan_info: dict = {}
         self.last_error: str | None = None
+        self.loop_ts = time.time()
         self.scan_lock = threading.Lock()
         self._adj: dict = {}
         self._adj_ts = 0.0
@@ -135,13 +139,22 @@ class Scanner:
         # a new 5m candle closed in the last ~minute -> refresh 5m data
         need_5m = False
         errors = 0
-        with ThreadPoolExecutor(max_workers=self.cfg.max_workers) as pool:
-            futs = [pool.submit(self._fetch, s, need_5m, now) for s in symbols]
-            for f in as_completed(futs):
+        # never wait forever on downloads: a hard deadline for the whole fetch stage
+        pool = ThreadPoolExecutor(max_workers=self.cfg.max_workers, thread_name_prefix="fetch")
+        futs = [pool.submit(self._fetch, s, need_5m, now) for s in symbols]
+        try:
+            for f in as_completed(futs, timeout=FETCH_DEADLINE_SEC):
                 sym, err = f.result()
                 if err:
                     errors += 1
                     self.db.log_error(sym, "fetch", err)
+        except FutTimeout:
+            pending = sum(1 for f in futs if not f.done())
+            errors += pending
+            self.db.log_error(None, "fetch", f"fetch deadline {FETCH_DEADLINE_SEC}s hit; {pending} coins skipped")
+            log.error("Fetch deadline hit, %d coins not refreshed this round", pending)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         adj = self._adjustments()
         alerts, detections, skipped = [], 0, 0
         for sym in symbols:
@@ -165,6 +178,11 @@ class Scanner:
                 self.db.log_error(sym, "evaluate", f"{type(e).__name__}: {e}")
                 log.exception("evaluate %s failed", sym)
         alerts = self.dispatch(alerts)
+        try:
+            self.track_outcomes()
+        except Exception as e:
+            self._safe_log_error(None, "outcome", f"{type(e).__name__}: {e}")
+            log.exception("outcome tracking failed")
         self.last_scan_ts = time.time()
         self.last_scan_info = {"coins": len(symbols), "detections": detections, "alerts": len(alerts),
                                "skipped": skipped, "errors": errors, "seconds": round(time.time() - t0, 1),
@@ -173,6 +191,7 @@ class Scanner:
         return self.last_scan_info
 
     def evaluate_symbol(self, sym: str, d1: pd.DataFrame, d5: pd.DataFrame, adj: dict) -> dict:
+        self._save_5m_patterns(sym, d5)
         ev = build_events(d1, self.cfg, htf=d5, tf="1m", adjustments=adj)
         if ev.empty:
             return {"detections": 0, "alerts": []}
@@ -215,6 +234,17 @@ class Scanner:
             cands.append(sig)
         return {"detections": len(ev), "alerts": cands}
 
+    def _save_5m_patterns(self, sym: str, d5: pd.DataFrame) -> None:
+        """5M engine: store patterns of the latest closed 5m candle (history for later analysis)."""
+        if len(d5) < 30:
+            return
+        tail = d5.tail(60).reset_index(drop=True)
+        hits = detect_patterns(tail).iloc[-1]
+        last = tail.iloc[-1]
+        rows = [(now_ms(), sym, "5m", int(last["open_time"]), p, PATTERNS[p], float(last["close"]), None, None)
+                for p, v in hits.items() if v]
+        self.db.save_patterns(rows)
+
     def dispatch(self, cands: list[dict]) -> list[dict]:
         """Send the best candidates (capped per scan); the rest are logged as suppressed."""
         cands = sorted(cands, key=lambda s: s["score"], reverse=True)
@@ -239,25 +269,89 @@ class Scanner:
         log.info("Scanner loop started (polls once per closed 1m candle)")
         backoff = 5
         while not stop.is_set():
-            # sleep until the next 1m candle close + a small delay
-            now = self.client.now_ms()
-            wait = (60_000 - now % 60_000) / 1000 + self.cfg.close_delay_sec
-            if stop.wait(wait):
-                break
-            if not self.enabled:
-                continue
+            self.loop_ts = time.time()
             try:
+                # sleep until the next 1m candle close + a small delay
+                now = self.client.now_ms()
+                wait = (60_000 - now % 60_000) / 1000 + self.cfg.close_delay_sec
+                if stop.wait(wait):
+                    break
+                self.loop_ts = time.time()
+                if not self.enabled:
+                    continue
                 self.scan_once()
                 self.last_error = None
                 backoff = 5
             except GeoBlockedError as e:
                 self.last_error = str(e)
-                self.db.log_error(None, "network", str(e))
+                self._safe_log_error(None, "network", str(e))
                 log.error("%s", e)
                 stop.wait(300)
-            except Exception as e:  # network down etc. -> recover automatically
+            except Exception as e:  # network down, DB busy, anything -> keep the loop alive
                 self.last_error = f"{type(e).__name__}: {e}"
-                self.db.log_error(None, "scan", self.last_error)
+                self._safe_log_error(None, "scan", self.last_error)
                 log.exception("scan failed; retrying in %ss", backoff)
                 stop.wait(backoff)
                 backoff = min(backoff * 2, 300)
+        log.info("Scanner loop stopped")
+
+    def _safe_log_error(self, symbol, stage, err) -> None:
+        try:
+            self.db.log_error(symbol, stage, err)
+        except Exception:
+            log.exception("could not write scanner error to DB")
+
+    # -------------------------------------------------------- alert outcomes
+    @staticmethod
+    def _outcome(r, after: pd.DataFrame, hold: int):
+        """(reason, exit_price, close_time) or None if the alert is still open."""
+        if after.empty:
+            return None
+        long = r.direction == "LONG"
+        for i, c in enumerate(after.itertuples()):
+            sl_hit = c.low <= r.sl if long else c.high >= r.sl
+            tp_hit = c.high >= r.tp if long else c.low <= r.tp
+            if sl_hit:  # checked first: if both touched in one candle we assume the stop
+                px = min(r.sl, c.open) if long else max(r.sl, c.open)  # gap through the stop -> worse fill
+                return ("SL", px, c.close_time)
+            if tp_hit:
+                return ("TP", r.tp, c.close_time)
+        if len(after) < hold:
+            return None
+        return ("TIME", float(after["close"].iloc[-1]), int(after["close_time"].iloc[-1]))
+
+    def track_outcomes(self) -> int:
+        """Close tracked alerts: did price reach the TP or SL reference level first (or time stop)?
+
+        Same rules as the backtest: entry at the next candle open, SL first if both touched in one candle,
+        fees + slippage on both sides. Analysis only - nothing is traded.
+        """
+        pending = self.db.pending_outcomes()
+        closed = 0
+        hold = int(self.cfg.max_hold_bars)
+        fee, slip = self.cfg.fee_pct / 100, self.cfg.slippage_pct / 100
+        for r in pending.itertuples():
+            after = self.db.load_candles(r.symbol, "1m", start_ms=int(r.candle_open_time) + 60_000).head(hold)
+            res = self._outcome(r, after, hold)
+            old = (self.client.now_ms() - int(r.candle_open_time)) > (hold + 5) * 60_000
+            if res is None and old and len(after) < hold:
+                try:  # coin may have left the universe -> fetch the missing window once
+                    df = self.client.klines(r.symbol, "1m", limit=hold + 2,
+                                            start_time=int(r.candle_open_time) + 60_000)
+                    self.db.upsert_candles(r.symbol, "1m", df)
+                    after = df.head(hold)
+                    res = self._outcome(r, after, hold)
+                except Exception as e:
+                    self._safe_log_error(r.symbol, "outcome", f"{type(e).__name__}: {e}")
+            if res is None:
+                continue  # still open
+            long = r.direction == "LONG"
+            raw = float(after["open"].iloc[0])
+            entry = raw * (1 + slip) if long else raw * (1 - slip)
+            exitp = res[1] * (1 - slip) if long else res[1] * (1 + slip)
+            ret = ((exitp / entry - 1) if long else (entry / exitp - 1)) * 100 - 2 * fee * 100
+            self.db.close_outcome(r.signal_key, raw, res[0], float(res[1]), round(ret, 4), int(res[2]))
+            closed += 1
+        if closed:
+            log.info("Tracked alert outcomes closed: %d", closed)
+        return closed
